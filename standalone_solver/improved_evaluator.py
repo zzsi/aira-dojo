@@ -206,7 +206,7 @@ class ImprovedCodeEvaluator:
                         print(f"[Execution {self.evaluation_count}] Submission file created ({len(submission_content)} chars)")
                 
                 # Save artifacts
-                self._save_enhanced_artifacts(code, submission_content, result.stdout, claude_response, claude_metadata)
+                self._save_enhanced_artifacts(code, submission_content, result.stdout, result.stderr, claude_response, claude_metadata)
                 
                 # Parse CV score
                 cv_score = self._extract_cv_score(result.stdout)
@@ -247,7 +247,7 @@ class ImprovedCodeEvaluator:
                 execution_time = time.time() - start_time
                 return self._create_exception_result(str(e), execution_time, self.evaluation_count)
     
-    def _save_enhanced_artifacts(self, code: str, submission_content: str, stdout: str, 
+    def _save_enhanced_artifacts(self, code: str, submission_content: str, stdout: str, stderr: str,
                                claude_response: str, claude_metadata: Dict[str, Any]):
         """Save enhanced artifacts including Claude's full response."""
         artifacts_dir = self.work_dir / "artifacts"
@@ -284,9 +284,15 @@ class ImprovedCodeEvaluator:
             latest_submission = self.work_dir / "submission.csv"
             latest_submission.write_text(submission_content)
         
-        # Save execution log
-        log_file = artifacts_dir / f"execution_{eval_num}_{timestamp}.log"
-        log_file.write_text(stdout)
+        # Save execution stdout
+        stdout_file = artifacts_dir / f"stdout_{eval_num}_{timestamp}.log"
+        stdout_file.write_text(stdout)
+        
+        # Save execution stderr (contains full stack traces)
+        if stderr.strip():
+            stderr_file = artifacts_dir / f"stderr_{eval_num}_{timestamp}.log"
+            stderr_file.write_text(stderr)
+            print(f"[Artifacts] Saved error details to stderr_{eval_num}_{timestamp}.log")
         
         print(f"[Artifacts] Saved iteration {eval_num} artifacts with timestamp {timestamp}")
     

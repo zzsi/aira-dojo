@@ -175,7 +175,7 @@ This document tracks what approaches work and don't work for this ML task.
     
     def record_learning(self, iteration: int, solution: dict, category: str, insight: str):
         """
-        Record a learning from this iteration.
+        Record a concise, unique learning insight.
         
         Args:
             iteration: Current iteration number
@@ -183,50 +183,85 @@ This document tracks what approaches work and don't work for this ML task.
             category: 'works', 'doesnt_work', or 'insight'
             insight: The learning insight to record
         """
-        timestamp = self._get_timestamp()
-        cv_score = solution.get('cv_score')
-        success = solution.get('success', False)
-        
-        # Format the entry
-        score_text = f"CV={cv_score:.4f}" if cv_score else "No score"
-        status = "✅" if success else "❌"
-        
-        learning_entry = f"""
-### Iteration {iteration} - {timestamp}
-**Status**: {status} {score_text}  
-**Learning**: {insight}
-
-"""
+        # Extract the core learning without iteration-specific details
+        core_insight = self._extract_core_insight(insight)
         
         # Read current content
         current_content = self.learnings_file.read_text()
         
-        # Insert into appropriate section
-        if category == 'works' and success:
-            insertion_point = current_content.find("## What Doesn't Work ❌")
-            section_header = "## What Works ✅"
-        elif category == 'doesnt_work' and not success:
-            insertion_point = current_content.find("## Key Insights 💡")
-            section_header = "## What Doesn't Work ❌"
-        else:
-            insertion_point = current_content.find("## Iteration Log")
-            section_header = "## Key Insights 💡"
+        # Check if this insight already exists (avoid duplicates)
+        if core_insight.lower() in current_content.lower():
+            if self.verbose:
+                print(f"📚 Learning already recorded: {core_insight[:50]}...")
+            return
         
-        if insertion_point != -1:
-            # Insert before the next section
-            new_content = (
-                current_content[:insertion_point] + 
-                learning_entry + 
-                current_content[insertion_point:]
-            )
+        cv_score = solution.get('execution_result', {}).get('cv_score')
+        success = solution.get('success', False)
+        
+        # Create concise entry based on category
+        if category == 'works' and success and cv_score:
+            entry = f"- {core_insight} (CV: {cv_score:.3f})\n"
+            section_marker = "## What Works ✅"
+        elif category == 'doesnt_work':
+            entry = f"- {core_insight}\n"
+            section_marker = "## What Doesn't Work ❌"
         else:
-            # Append at end
-            new_content = current_content + learning_entry
+            entry = f"- {core_insight}\n"
+            section_marker = "## Key Insights 💡"
+        
+        # Insert after the section header
+        section_start = current_content.find(section_marker)
+        if section_start != -1:
+            # Find the end of section header line
+            line_end = current_content.find('\n', section_start) + 1
+            next_section = current_content.find('\n## ', line_end)
+            
+            if next_section == -1:
+                # Last section, append at end
+                new_content = current_content[:line_end] + entry + current_content[line_end:]
+            else:
+                # Insert before next section
+                new_content = current_content[:line_end] + entry + current_content[line_end:]
+        else:
+            # Section not found, append at end
+            new_content = current_content + f"\n{section_marker}\n{entry}"
         
         self.learnings_file.write_text(new_content)
         
         if self.verbose:
-            print(f"📚 Recorded learning: {insight[:50]}...")
+            # Show more context for errors, less for simple insights
+            display_length = 150 if any(word in core_insight.lower() for word in ['error', 'failed', 'exception']) else 80
+            if len(core_insight) > display_length:
+                print(f"📚 Recorded learning: {core_insight[:display_length]}...")
+            else:
+                print(f"📚 Recorded learning: {core_insight}")
+    
+    def _extract_core_insight(self, insight: str) -> str:
+        """Extract the core learning without iteration-specific noise."""
+        # Remove common prefixes and iteration-specific details
+        insight = insight.replace("High-performing approach: ", "")
+        insight = insight.replace("Decent approach: ", "")
+        insight = insight.replace("Missing dependency: ", "")
+        insight = insight.replace("Data access issue: ", "")
+        insight = insight.replace("Code generation issue: ", "")
+        insight = insight.replace("Solution runtime error ", "")
+        insight = insight.replace("Execution failure: ", "")
+        insight = insight.replace("Framework issue: ", "")
+        insight = insight.replace("General failure: ", "")
+        
+        # Remove iteration numbers and timestamps
+        import re
+        insight = re.sub(r'Iteration \d+[:\-\s]*', '', insight)
+        insight = re.sub(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}', '', insight)
+        insight = re.sub(r'\(CV[=:]?[\d\.]+\)', '', insight)  # Remove (CV=0.123) or (CV:0.123)
+        insight = re.sub(r'CV[=:]?[\d\.]+', '', insight)      # Remove CV=0.123 or CV:0.123
+        
+        # Clean up and limit length
+        insight = insight.strip().rstrip('...')
+        if len(insight) > 100:
+            insight = insight[:97] + "..."
+        
+        return insight
     
     def analyze_and_learn_from_iteration(self, iteration: int, solution: dict):
         """
@@ -382,10 +417,48 @@ def main():
             solver.show_solution_history()
             return
         
+        # Setup stdout logging
+        log_file = solver.work_dir / "solver_session.log"
+        original_stdout = sys.stdout
+        
+        class TeeOutput:
+            """Tee stdout to both console and log file"""
+            def __init__(self, file):
+                self.file = file
+                self.console = original_stdout
+                
+            def write(self, text):
+                self.console.write(text)
+                self.file.write(text)
+                self.file.flush()
+                
+            def flush(self):
+                self.console.flush()
+                self.file.flush()
+        
         print(f"🔧 MLEBench Solver - Task: {args.task}")
         print("=" * 60)
+        print(f"📝 Logging session to: {log_file}")
         
-        summary = solver.run()
+        # Start logging to file
+        with open(log_file, 'w') as f:
+            # Write header to log
+            from datetime import datetime
+            f.write(f"MLEBench Solver Session Log\n")
+            f.write(f"Task: {args.task}\n")
+            f.write(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Max iterations: {args.max_iterations}\n")
+            f.write("=" * 60 + "\n\n")
+            f.flush()
+            
+            # Redirect stdout to tee
+            sys.stdout = TeeOutput(f)
+            
+            try:
+                summary = solver.run()
+            finally:
+                # Restore original stdout
+                sys.stdout = original_stdout
         
         # Show final results
         if solver.verbose and solver.repo:

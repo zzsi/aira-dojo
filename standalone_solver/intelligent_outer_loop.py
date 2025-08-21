@@ -76,9 +76,10 @@ class JournalAnalyzer:
         return analysis
     
     def _extract_successful_patterns(self, successful_journals: List[Dict]) -> List[str]:
-        """Extract patterns from successful interactions."""
+        """Extract patterns from successful interactions and learnings.md."""
         patterns = []
         
+        # Extract from journal files
         for journal in successful_journals:
             try:
                 content = Path(journal['path']).read_text()
@@ -95,6 +96,24 @@ class JournalAnalyzer:
                 
             except Exception:
                 continue
+        
+        # Extract from learnings.md for task-specific insights
+        try:
+            learnings_file = self.journal_manager.work_dir / "learnings.md"
+            if learnings_file.exists():
+                learnings_content = learnings_file.read_text()
+                
+                # Parse "What Works" section
+                works_section = self._extract_section_content(learnings_content, "## What Works ✅")
+                if works_section:
+                    for line in works_section.split('\n'):
+                        if line.strip().startswith('- '):
+                            insight = line.strip()[2:].strip()
+                            if insight and len(insight) > 10:  # Skip trivial entries
+                                patterns.append(insight)
+                
+        except Exception:
+            pass
         
         return list(set(patterns))  # Remove duplicates
     
@@ -128,9 +147,10 @@ class JournalAnalyzer:
         return [f"{error} (occurred {count} times)" for error, count in sorted_errors[:5]]
     
     def _extract_failed_patterns(self, failed_journals: List[Dict]) -> List[str]:
-        """Extract patterns from failed approaches."""
+        """Extract patterns from failed approaches and learnings.md."""
         patterns = []
         
+        # Extract from journal files
         for journal in failed_journals:
             try:
                 content = Path(journal['path']).read_text()
@@ -146,7 +166,41 @@ class JournalAnalyzer:
             except Exception:
                 continue
         
+        # Extract from learnings.md for task-specific failures
+        try:
+            learnings_file = self.journal_manager.work_dir / "learnings.md"
+            if learnings_file.exists():
+                learnings_content = learnings_file.read_text()
+                
+                # Parse "What Doesn't Work" section
+                fails_section = self._extract_section_content(learnings_content, "## What Doesn't Work ❌")
+                if fails_section:
+                    for line in fails_section.split('\n'):
+                        if line.strip().startswith('- '):
+                            insight = line.strip()[2:].strip()
+                            if insight and len(insight) > 10:  # Skip trivial entries
+                                patterns.append(f"AVOID: {insight}")
+                
+        except Exception:
+            pass
+        
         return list(set(patterns))
+    
+    def _extract_section_content(self, content: str, section_header: str) -> str:
+        """Extract content of a specific markdown section."""
+        start = content.find(section_header)
+        if start == -1:
+            return ""
+        
+        # Find start of content (after section header line)
+        content_start = content.find('\n', start) + 1
+        
+        # Find next section or end of content
+        next_section = content.find('\n## ', content_start)
+        if next_section == -1:
+            return content[content_start:].strip()
+        else:
+            return content[content_start:next_section].strip()
     
     def _generate_recommendations(self, analysis: Dict[str, Any]) -> List[str]:
         """Generate actionable recommendations based on analysis."""
@@ -174,6 +228,25 @@ class JournalAnalyzer:
                 recommendations.append("Stick to standard libraries: sklearn, pandas, numpy")
             elif "syntax" in error.lower():
                 recommendations.append("Add explicit syntax validation examples to prompts")
+        
+        # Add task-specific insights from learnings.md
+        try:
+            learnings_file = self.journal_manager.work_dir / "learnings.md"
+            if learnings_file.exists():
+                learnings_content = learnings_file.read_text()
+                
+                # Extract insights from "Key Insights" section
+                insights_section = self._extract_section_content(learnings_content, "## Key Insights 💡")
+                if insights_section:
+                    insights_count = 0
+                    for line in insights_section.split('\n'):
+                        if line.strip().startswith('- ') and insights_count < 3:
+                            insight = line.strip()[2:].strip()
+                            if insight and len(insight) > 10:
+                                recommendations.append(insight)
+                                insights_count += 1
+        except Exception:
+            pass
         
         return recommendations
 
@@ -260,7 +333,7 @@ class IntelligentPolicy:
             return True, f"Excellent score achieved: {best_score:.4f}"
         
         # Check for repeated failures (based on journal analysis)
-        if self.analysis and self.analysis["success_rate"] < 0.2 and len(current_results) >= 3:
+        if self.analysis and self.analysis.get("success_rate", 1.0) < 0.2 and len(current_results) >= 3:
             return True, "Low success rate detected, stopping to avoid wasted compute"
         
         # Check for convergence (similar approaches not improving)
