@@ -10,7 +10,8 @@ hyperopt==0.2.7
 igraph==0.11.8
 jsonlines==4.0.0
 jsonschema==4.23.0
-kaggle==1.6.3
+# Bump kaggle for Py3.12 compatibility
+kaggle==1.7.4
 kornia==0.8.0
 librosa==0.11.0
 litellm==1.65.7
@@ -42,7 +43,8 @@ websocket-client==1.8.0
 transformers==4.50.1
 black==25.1.0
 black[jupyter]==25.1.0
-bitsandbytes==0.45.5
+# bitsandbytes is not available on macOS/Py3.12; comment out by default
+# bitsandbytes==0.45.5
 depyf==0.18.0
 fire==0.7.0
 flake8-bugbear==24.12.12
