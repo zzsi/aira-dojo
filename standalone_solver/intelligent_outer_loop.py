@@ -420,6 +420,18 @@ class IntelligentSolver:
             "timestamp": time.time()
         }
         
+        # Add error details for failed executions
+        if not execution_result["success"]:
+            error_parts = []
+            if execution_result.get("stderr"):
+                error_parts.append(f"STDERR: {execution_result['stderr']}")
+            if execution_result.get("stdout"):
+                error_parts.append(f"STDOUT: {execution_result['stdout']}")
+            if execution_result.get("return_code") != 0:
+                error_parts.append(f"Exit code: {execution_result['return_code']}")
+            
+            solution["error"] = " | ".join(error_parts) if error_parts else "Unknown execution failure"
+        
         return solution
     
     def run(self) -> Dict[str, Any]:
@@ -451,8 +463,23 @@ class IntelligentSolver:
                     print("\\n⚠️  Interrupted by user")
                 break
             except Exception as e:
+                import traceback
+                error_details = traceback.format_exc()
                 if self.verbose:
-                    print(f"\\n❌ Error in iteration {iteration}: {e}")
+                    print(f"\\n❌ Framework error in iteration {iteration}: {type(e).__name__}: {e}")
+                    print(f"Full traceback:\\n{error_details}")
+                
+                # Create a failed solution record for proper learning
+                failed_solution = {
+                    "iteration": iteration,
+                    "success": False,
+                    "error": f"Framework error: {type(e).__name__}: {e}",
+                    "framework_error": True,
+                    "traceback": error_details,
+                    "timestamp": time.time()
+                }
+                self.solutions.append(failed_solution)
+                self.update_memory(failed_solution)
                 continue
         
         return self.summarize_intelligent_session()

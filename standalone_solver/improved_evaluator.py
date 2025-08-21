@@ -32,7 +32,7 @@ class ImprovedCodeEvaluator:
         
         # Create journals directory
         self.journals_dir = self.work_dir / "journals"
-        self.journals_dir.mkdir(exist_ok=True)
+        self.journals_dir.mkdir(parents=True, exist_ok=True)
     
     def log_claude_interaction(self, prompt: str, response: str, metadata: Dict[str, Any]):
         """
@@ -229,6 +229,13 @@ class ImprovedCodeEvaluator:
                     print(f"[Execution {self.evaluation_count}] {status} ({execution_time:.2f}s)")
                     if cv_score is not None:
                         print(f"[Execution {self.evaluation_count}] CV Score: {cv_score}")
+                    elif not execution_result["success"]:
+                        # Print error details for failed executions
+                        if result.stderr:
+                            print(f"[Execution {self.evaluation_count}] STDERR: {result.stderr[:500]}...")
+                        if result.stdout:
+                            print(f"[Execution {self.evaluation_count}] STDOUT: {result.stdout[:300]}...")
+                        print(f"[Execution {self.evaluation_count}] Return code: {result.returncode}")
                 
                 return execution_result
                 
