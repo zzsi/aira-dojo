@@ -23,7 +23,7 @@ class MLEBenchSolver(GitVersionedSolver):
     """Solver that can work with any MLEBench task."""
     
     def __init__(self, task_name: str, mlebench_data_dir: str, 
-                 max_iterations: int = 5, verbose: bool = True, auto_commit: bool = True):
+                 max_iterations: int = 5, verbose: bool = True, auto_commit: bool = True, use_docker: bool = True):
         """
         Initialize MLEBench solver for a specific task.
         
@@ -45,7 +45,7 @@ class MLEBenchSolver(GitVersionedSolver):
         self._validate_task_data()
         
         # Initialize parent with task-specific work directory
-        super().__init__(work_dir, max_iterations, verbose, auto_commit)
+        super().__init__(work_dir, max_iterations, verbose, auto_commit, use_docker)
         
         # Setup task data in working directory
         self._setup_task_data()
@@ -379,6 +379,7 @@ def main():
     parser.add_argument("--quiet", action="store_true", help="Reduce verbosity")
     parser.add_argument("--no-auto-commit", action="store_true", help="Disable automatic commits")
     parser.add_argument("--show-history", action="store_true", help="Show solution history and exit")
+    parser.add_argument("--no-docker", action="store_true", help="Use virtual environment instead of Docker")
     
     args = parser.parse_args()
     
@@ -410,7 +411,8 @@ def main():
             mlebench_data_dir=args.mlebench_data_dir,
             max_iterations=args.max_iterations,
             verbose=not args.quiet,
-            auto_commit=not args.no_auto_commit
+            auto_commit=not args.no_auto_commit,
+            use_docker=not args.no_docker
         )
         
         if args.show_history:

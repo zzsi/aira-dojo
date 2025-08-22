@@ -39,7 +39,7 @@ class MultifileSolver(GitVersionedSolver):
     """Solver that uses tree search with git branches and edits working directory files."""
     
     def __init__(self, work_dir: str = "output/working", max_iterations: int = 10,
-                 max_branches: int = 5, verbose: bool = True, auto_commit: bool = True):
+                 max_branches: int = 5, verbose: bool = True, auto_commit: bool = True, use_docker: bool = True):
         """
         Initialize multifile tree search solver.
         
@@ -50,7 +50,7 @@ class MultifileSolver(GitVersionedSolver):
             verbose: Whether to print detailed progress
             auto_commit: Whether to automatically commit changes
         """
-        super().__init__(work_dir, max_iterations, verbose, auto_commit)
+        super().__init__(work_dir, max_iterations, verbose, auto_commit, use_docker)
         
         self.max_branches = max_branches
         self.file_manager = FileStateManager(self.work_dir, verbose)

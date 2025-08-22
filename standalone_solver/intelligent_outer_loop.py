@@ -20,6 +20,7 @@ from prompt_templates import (
     prepare_draft_prompt, load_task_description, generate_data_overview
 )
 from improved_evaluator import ImprovedCodeEvaluator
+from docker_evaluator import DockerEvaluator
 from journal_manager import JournalManager
 
 class JournalAnalyzer:
@@ -386,14 +387,25 @@ class IntelligentSolver:
     """Solver with journal-informed intelligence."""
     
     def __init__(self, work_dir: str = "output/working", max_iterations: int = 5, 
-                 verbose: bool = True):
+                 verbose: bool = True, use_docker: bool = True):
         self.work_dir = Path(work_dir)
         self.max_iterations = max_iterations
         self.verbose = verbose
+        self.use_docker = use_docker
         
         # Initialize components
         self.claude = ClaudeInterface(timeout_secs=900)  # 15 minutes for complex ML solutions
-        self.evaluator = ImprovedCodeEvaluator(self.work_dir, timeout_secs=600)
+        
+        # Choose evaluator based on preference
+        if use_docker:
+            self.evaluator = DockerEvaluator(self.work_dir, timeout_secs=600)
+            if self.verbose:
+                print("🐳 Using Docker evaluator for dependency management")
+        else:
+            self.evaluator = ImprovedCodeEvaluator(self.work_dir, timeout_secs=600)
+            if self.verbose:
+                print("📦 Using virtual environment evaluator")
+        
         self.journal_manager = JournalManager(self.work_dir)
         self.analyzer = JournalAnalyzer(self.journal_manager)
         self.policy = IntelligentPolicy(self.analyzer)
@@ -673,13 +685,15 @@ def main():
     parser.add_argument("--work-dir", default="output/working", help="Working directory")
     parser.add_argument("--max-iterations", type=int, default=5, help="Maximum iterations")
     parser.add_argument("--quiet", action="store_true", help="Reduce verbosity")
+    parser.add_argument("--no-docker", action="store_true", help="Use virtual environment instead of Docker")
     
     args = parser.parse_args()
     
     solver = IntelligentSolver(
         work_dir=args.work_dir,
         max_iterations=args.max_iterations,
-        verbose=not args.quiet
+        verbose=not args.quiet,
+        use_docker=not args.no_docker
     )
     
     try:

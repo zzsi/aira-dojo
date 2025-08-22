@@ -17,7 +17,7 @@ class GitVersionedSolver(IntelligentSolver):
     """Intelligent solver with git version control for solutions."""
     
     def __init__(self, work_dir: str = "output/working", max_iterations: int = 5, 
-                 verbose: bool = True, auto_commit: bool = True):
+                 verbose: bool = True, auto_commit: bool = True, use_docker: bool = True):
         """
         Initialize git-versioned solver.
         
@@ -26,8 +26,9 @@ class GitVersionedSolver(IntelligentSolver):
             max_iterations: Maximum number of iterations
             verbose: Whether to print detailed progress
             auto_commit: Whether to automatically commit after each iteration
+            use_docker: Whether to use Docker for dependency management
         """
-        super().__init__(work_dir, max_iterations, verbose)
+        super().__init__(work_dir, max_iterations, verbose, use_docker)
         self.auto_commit = auto_commit
         self.repo: Optional[git.Repo] = None
         
