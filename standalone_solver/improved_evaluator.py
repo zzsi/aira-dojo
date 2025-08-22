@@ -13,6 +13,8 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, Tuple, Optional
 
+from dependency_manager import DependencyManager
+
 class ImprovedCodeEvaluator:
     """Enhanced evaluator with data aliasing and journaling."""
     
@@ -33,6 +35,13 @@ class ImprovedCodeEvaluator:
         # Create journals directory
         self.journals_dir = self.work_dir / "journals"
         self.journals_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Initialize dependency manager
+        dep_cache_dir = self.work_dir / "venv_cache"
+        self.dependency_manager = DependencyManager(dep_cache_dir, verbose=True)
+        
+        # Clean up old environments periodically
+        self.dependency_manager.cleanup_old_environments(max_count=5)
     
     def log_claude_interaction(self, prompt: str, response: str, metadata: Dict[str, Any]):
         """
@@ -181,12 +190,36 @@ class ImprovedCodeEvaluator:
                 print(f"[Execution {self.evaluation_count}] Code written to {code_file}")
                 print(f"[Execution {self.evaluation_count}] Data access via {'symlink' if self.use_data_aliases else 'copy'}")
             
-            # Execute code
+            # Prepare virtual environment with dependencies
+            venv_path, packages = self.dependency_manager.prepare_environment(code)
+            
+            if venv_path is None:
+                error_msg = f"❌ VIRTUALENV SETUP FAILED: Could not prepare environment for packages: {packages}"
+                print(error_msg)
+                return self._create_error_result(error_msg, self.evaluation_count)
+            
+            # Get Python executable from virtual environment
+            python_executable = self.dependency_manager.get_python_path(venv_path)
+            
+            # Verify Python executable exists
+            if not python_executable.exists():
+                error_msg = f"❌ VIRTUALENV SETUP FAILED: Python executable not found at {python_executable}"
+                print(error_msg)
+                return self._create_error_result(error_msg, self.evaluation_count)
+            
+            if verbose:
+                print(f"✅ VIRTUALENV SETUP SUCCESS: Using Python at {python_executable}")
+                if packages:
+                    print(f"[Execution {self.evaluation_count}] Using environment with packages: {', '.join(packages)}")
+                else:
+                    print(f"[Execution {self.evaluation_count}] Using base environment (no external packages needed)")
+            
+            # Execute code in virtual environment
             start_time = time.time()
             
             try:
                 result = subprocess.run(
-                    [sys.executable, str(code_file)],
+                    [str(python_executable), str(code_file)],
                     cwd=temp_path,
                     capture_output=True,
                     text=True,
@@ -221,7 +254,9 @@ class ImprovedCodeEvaluator:
                     "submission_content": submission_content,
                     "cv_score": cv_score,
                     "evaluation_number": self.evaluation_count,
-                    "data_access_method": "symlink" if self.use_data_aliases else "copy"
+                    "data_access_method": "symlink" if self.use_data_aliases else "copy",
+                    "packages_used": packages,
+                    "venv_fingerprint": venv_path.name if venv_path else None
                 }
                 
                 if verbose:

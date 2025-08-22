@@ -8,18 +8,28 @@ import subprocess
 import time
 import json
 import re
+import os
 from typing import Tuple, Optional
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # Load environment variables from .env file
+except ImportError:
+    pass  # python-dotenv not installed, skip loading
 
 class ClaudeInterface:
     """Interface to Claude CLI."""
     
-    def __init__(self, timeout_secs: int = 300):
+    def __init__(self, timeout_secs: int = None):
         """
         Initialize Claude interface.
         
         Args:
-            timeout_secs: Timeout for Claude CLI calls
+            timeout_secs: Timeout for Claude CLI calls (defaults to CLAUDE_TIMEOUT_SECS env var or 900s)
         """
+        if timeout_secs is None:
+            timeout_secs = int(os.getenv('CLAUDE_TIMEOUT_SECS', '900'))
+        
         self.timeout_secs = timeout_secs
         self.call_count = 0
     
