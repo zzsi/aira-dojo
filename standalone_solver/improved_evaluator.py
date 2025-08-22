@@ -13,7 +13,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, Tuple, Optional
 
-from dependency_manager import DependencyManager
+# from dependency_manager import DependencyManager  # Removed - using Docker instead
 
 class ImprovedCodeEvaluator:
     """Enhanced evaluator with data aliasing and journaling."""
@@ -38,10 +38,10 @@ class ImprovedCodeEvaluator:
         
         # Initialize dependency manager
         dep_cache_dir = self.work_dir / "venv_cache"
-        self.dependency_manager = DependencyManager(dep_cache_dir, verbose=True)
+        # self.dependency_manager = DependencyManager(dep_cache_dir, verbose=True)  # Removed - using Docker instead
         
         # Clean up old environments periodically
-        self.dependency_manager.cleanup_old_environments(max_count=5)
+        # self.dependency_manager.cleanup_old_environments(max_count=5)  # Removed - using Docker instead
     
     def log_claude_interaction(self, prompt: str, response: str, metadata: Dict[str, Any]):
         """
@@ -191,15 +191,17 @@ class ImprovedCodeEvaluator:
                 print(f"[Execution {self.evaluation_count}] Data access via {'symlink' if self.use_data_aliases else 'copy'}")
             
             # Prepare virtual environment with dependencies
-            venv_path, packages = self.dependency_manager.prepare_environment(code)
+            # venv_path, packages = self.dependency_manager.prepare_environment(code)  # Removed - using Docker instead
+            venv_path = None  # Docker handles dependencies
             
             if venv_path is None:
-                error_msg = f"❌ VIRTUALENV SETUP FAILED: Could not prepare environment for packages: {packages}"
+                error_msg = f"❌ VIRTUALENV SETUP FAILED: Virtual environment setup disabled (use Docker instead)"
                 print(error_msg)
                 return self._create_error_result(error_msg, self.evaluation_count)
             
             # Get Python executable from virtual environment
-            python_executable = self.dependency_manager.get_python_path(venv_path)
+            # python_executable = self.dependency_manager.get_python_path(venv_path)  # Removed - using Docker instead
+            python_executable = "python3"  # Docker handles this
             
             # Verify Python executable exists
             if not python_executable.exists():

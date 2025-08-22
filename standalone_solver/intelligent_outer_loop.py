@@ -22,368 +22,10 @@ from prompt_templates import (
 from improved_evaluator import ImprovedCodeEvaluator
 from docker_evaluator import DockerEvaluator
 from journal_manager import JournalManager
+from journal_analyzer import JournalAnalyzer
+from intelligent_policy import IntelligentPolicy
+from claude_verifier import ClaudeVerifier
 
-class JournalAnalyzer:
-    """Analyzes journals to extract learning patterns."""
-    
-    def __init__(self, journal_manager: JournalManager):
-        self.journal_manager = journal_manager
-    
-    def analyze_patterns(self) -> Dict[str, Any]:
-        """
-        Analyze journal patterns to inform strategy.
-        
-        Returns:
-            Dictionary with analysis results
-        """
-        journals = self.journal_manager.list_journals()
-        
-        if not journals:
-            return {"error": "No journals to analyze"}
-        
-        analysis = {
-            "total_interactions": len(journals),
-            "success_rate": 0,
-            "common_errors": [],
-            "successful_approaches": [],
-            "failed_approaches": [],
-            "response_time_trend": [],
-            "code_extraction_rate": 0,
-            "recommendations": []
-        }
-        
-        successful_journals = []
-        failed_journals = []
-        
-        for journal in journals:
-            if journal.get('success'):
-                successful_journals.append(journal)
-            else:
-                failed_journals.append(journal)
-        
-        analysis["success_rate"] = len(successful_journals) / len(journals) if journals else 0
-        analysis["code_extraction_rate"] = sum(1 for j in journals if j.get('code_extracted', False)) / len(journals)
-        
-        # Analyze successful approaches
-        analysis["successful_approaches"] = self._extract_successful_patterns(successful_journals)
-        
-        # Analyze failure patterns
-        analysis["common_errors"] = self._extract_error_patterns(failed_journals)
-        analysis["failed_approaches"] = self._extract_failed_patterns(failed_journals)
-        
-        # Generate recommendations
-        analysis["recommendations"] = self._generate_recommendations(analysis)
-        
-        return analysis
-    
-    def _extract_successful_patterns(self, successful_journals: List[Dict]) -> List[str]:
-        """Extract patterns from successful interactions and learnings.md."""
-        patterns = []
-        
-        # Extract from journal files
-        for journal in successful_journals:
-            try:
-                content = Path(journal['path']).read_text()
-                
-                # Look for successful algorithmic approaches
-                if "tfidf" in content.lower():
-                    patterns.append("TF-IDF vectorization works well")
-                if "logistic regression" in content.lower():
-                    patterns.append("Logistic Regression is effective")
-                if "cross_val_score" in content.lower():
-                    patterns.append("sklearn.cross_val_score is reliable")
-                if "leaveoneout" in content.lower():
-                    patterns.append("LeaveOneOut CV handles small datasets")
-                
-            except Exception:
-                continue
-        
-        # Extract from learnings.md for task-specific insights
-        try:
-            learnings_file = self.journal_manager.work_dir / "learnings.md"
-            if learnings_file.exists():
-                learnings_content = learnings_file.read_text()
-                
-                # Parse "What Works" section
-                works_section = self._extract_section_content(learnings_content, "## What Works ✅")
-                if works_section:
-                    for line in works_section.split('\n'):
-                        if line.strip().startswith('- '):
-                            insight = line.strip()[2:].strip()
-                            if insight and len(insight) > 10:  # Skip trivial entries
-                                patterns.append(insight)
-                
-        except Exception:
-            pass
-        
-        return list(set(patterns))  # Remove duplicates
-    
-    def _extract_error_patterns(self, failed_journals: List[Dict]) -> List[str]:
-        """Extract common error patterns."""
-        error_patterns = defaultdict(int)
-        
-        for journal in failed_journals:
-            try:
-                content = Path(journal['path']).read_text()
-                
-                # Common error patterns
-                if "n_splits=5 cannot be greater" in content:
-                    error_patterns["Too many CV splits for small dataset"] += 1
-                if "ImportError" in content:
-                    error_patterns["Missing dependency"] += 1
-                if "ModuleNotFoundError" in content:
-                    error_patterns["Module not found"] += 1
-                if "SyntaxError" in content:
-                    error_patterns["Python syntax error"] += 1
-                if "FileNotFoundError" in content:
-                    error_patterns["File path issue"] += 1
-                if "MemoryError" in content:
-                    error_patterns["Memory issue"] += 1
-                
-            except Exception:
-                continue
-        
-        # Return most common errors
-        sorted_errors = sorted(error_patterns.items(), key=lambda x: x[1], reverse=True)
-        return [f"{error} (occurred {count} times)" for error, count in sorted_errors[:5]]
-    
-    def _extract_failed_patterns(self, failed_journals: List[Dict]) -> List[str]:
-        """Extract patterns from failed approaches and learnings.md."""
-        patterns = []
-        
-        # Extract from journal files
-        for journal in failed_journals:
-            try:
-                content = Path(journal['path']).read_text()
-                
-                # Look for problematic approaches
-                if "stratifiedkfold" in content.lower() and "n_splits=5" in content.lower():
-                    patterns.append("5-fold StratifiedKFold fails on small datasets")
-                if "xgboost" in content.lower() and "ImportError" in content:
-                    patterns.append("XGBoost not available in environment")
-                if "deep learning" in content.lower() and any(word in content for word in ["memory", "timeout"]):
-                    patterns.append("Deep learning approaches are too resource intensive")
-                
-            except Exception:
-                continue
-        
-        # Extract from learnings.md for task-specific failures
-        try:
-            learnings_file = self.journal_manager.work_dir / "learnings.md"
-            if learnings_file.exists():
-                learnings_content = learnings_file.read_text()
-                
-                # Parse "What Doesn't Work" section
-                fails_section = self._extract_section_content(learnings_content, "## What Doesn't Work ❌")
-                if fails_section:
-                    for line in fails_section.split('\n'):
-                        if line.strip().startswith('- '):
-                            insight = line.strip()[2:].strip()
-                            if insight and len(insight) > 10:  # Skip trivial entries
-                                patterns.append(f"AVOID: {insight}")
-                
-        except Exception:
-            pass
-        
-        return list(set(patterns))
-    
-    def _extract_section_content(self, content: str, section_header: str) -> str:
-        """Extract content of a specific markdown section."""
-        start = content.find(section_header)
-        if start == -1:
-            return ""
-        
-        # Find start of content (after section header line)
-        content_start = content.find('\n', start) + 1
-        
-        # Find next section or end of content
-        next_section = content.find('\n## ', content_start)
-        if next_section == -1:
-            return content[content_start:].strip()
-        else:
-            return content[content_start:next_section].strip()
-    
-    def _generate_recommendations(self, analysis: Dict[str, Any]) -> List[str]:
-        """Generate actionable recommendations based on analysis."""
-        recommendations = []
-        
-        success_rate = analysis["success_rate"]
-        code_extraction_rate = analysis["code_extraction_rate"]
-        common_errors = analysis["common_errors"]
-        
-        # Success rate recommendations
-        if success_rate < 0.3:
-            recommendations.append("Low success rate - consider simpler, more explicit prompts")
-        elif success_rate > 0.8:
-            recommendations.append("High success rate - can try more complex approaches")
-        
-        # Code extraction recommendations
-        if code_extraction_rate < 0.7:
-            recommendations.append("Poor code extraction - emphasize code block formatting in prompts")
-        
-        # Error-specific recommendations
-        for error in common_errors:
-            if "CV splits" in error:
-                recommendations.append("Always specify LeaveOneOut or n_splits=3 for small datasets")
-            elif "dependency" in error.lower():
-                recommendations.append("Stick to standard libraries: sklearn, pandas, numpy")
-            elif "syntax" in error.lower():
-                recommendations.append("Add explicit syntax validation examples to prompts")
-        
-        # Add task-specific insights from learnings.md
-        try:
-            learnings_file = self.journal_manager.work_dir / "learnings.md"
-            if learnings_file.exists():
-                learnings_content = learnings_file.read_text()
-                
-                # Extract insights from "Key Insights" section
-                insights_section = self._extract_section_content(learnings_content, "## Key Insights 💡")
-                if insights_section:
-                    insights_count = 0
-                    for line in insights_section.split('\n'):
-                        if line.strip().startswith('- ') and insights_count < 3:
-                            insight = line.strip()[2:].strip()
-                            if insight and len(insight) > 10:
-                                recommendations.append(insight)
-                                insights_count += 1
-        except Exception:
-            pass
-        
-        return recommendations
-
-class IntelligentPolicy:
-    """Intelligent prompting policy based on journal analysis."""
-    
-    def __init__(self, analyzer: JournalAnalyzer):
-        self.analyzer = analyzer
-        self.analysis = None
-        self.update_analysis()
-    
-    def update_analysis(self):
-        """Update the analysis from journals."""
-        self.analysis = self.analyzer.analyze_patterns()
-    
-    def adapt_prompt_strategy(self, iteration: int, base_prompt: str) -> str:
-        """
-        Adapt the prompt based on learned patterns.
-        
-        Args:
-            iteration: Current iteration number
-            base_prompt: Base prompt to adapt
-            
-        Returns:
-            Enhanced prompt with learned insights
-        """
-        if not self.analysis or "error" in self.analysis:
-            return base_prompt  # No analysis available
-        
-        # Build adaptive additions
-        adaptations = []
-        
-        # Add success patterns
-        if self.analysis["successful_approaches"]:
-            successful_text = "\\n".join(f"- {approach}" for approach in self.analysis["successful_approaches"][:3])
-            adaptations.append(f"""
-**LEARNED SUCCESS PATTERNS (use these approaches):**
-{successful_text}
-""")
-        
-        # Add error avoidance
-        if self.analysis["common_errors"]:
-            error_text = "\\n".join(f"- AVOID: {error}" for error in self.analysis["common_errors"][:3])
-            adaptations.append(f"""
-**AVOID THESE COMMON ERRORS:**
-{error_text}
-""")
-        
-        # Add specific recommendations
-        if self.analysis["recommendations"]:
-            rec_text = "\\n".join(f"- {rec}" for rec in self.analysis["recommendations"][:3])
-            adaptations.append(f"""
-**SPECIFIC RECOMMENDATIONS:**
-{rec_text}
-""")
-        
-        # Insert adaptations before the response format section
-        if adaptations and "**RESPONSE FORMAT FOR IMPLEMENTATION**:" in base_prompt:
-            adaptation_block = "\\n".join(adaptations)
-            enhanced_prompt = base_prompt.replace(
-                "**RESPONSE FORMAT FOR IMPLEMENTATION**:",
-                f"{adaptation_block}\\n\\n**RESPONSE FORMAT FOR IMPLEMENTATION**:"
-            )
-            return enhanced_prompt
-        
-        return base_prompt
-    
-    def should_stop_early(self, current_results: List[Dict]) -> Tuple[bool, str]:
-        """
-        Determine if we should stop iterating early.
-        
-        Args:
-            current_results: List of solution results so far
-            
-        Returns:
-            Tuple of (should_stop, reason)
-        """
-        if not current_results:
-            return False, ""
-        
-        # Check for excellent results (only from successful executions)
-        successful_results = [r for r in current_results if r.get('success', False)]
-        if successful_results:
-            best_score = max((r.get('execution_result', {}).get('cv_score', 0) or 0) for r in successful_results)
-            if best_score >= 0.95 and best_score <= 1.0:  # Valid score range
-                return True, f"Excellent score achieved: {best_score:.4f}"
-        
-        # Check for Claude breakdown (multiple consecutive failures with no code extraction)
-        recent_results = current_results[-4:]  # Look at more recent results
-        if len(recent_results) >= 4:  # Need 4 attempts before stopping
-            no_code_failures = [r for r in recent_results if not r.get('success') and 'No code' in r.get('error', '')]
-            if len(no_code_failures) >= 3:  # Need 3 consecutive failures
-                return True, "Claude stopped generating code - likely in error state"
-        
-        # Check for repeated failures (based on journal analysis)
-        if self.analysis and self.analysis.get("success_rate", 1.0) < 0.1 and len(current_results) >= 4:
-            return True, "Low success rate detected, stopping to avoid wasted compute"
-        
-        # Check for convergence (similar approaches not improving)
-        recent_scores = [r.get('execution_result', {}).get('cv_score') for r in current_results[-3:]]
-        recent_scores = [s for s in recent_scores if s is not None]
-        
-        if len(recent_scores) >= 3:
-            score_variance = max(recent_scores) - min(recent_scores)
-            if score_variance < 0.05:  # Very small improvement
-                return True, f"Convergence detected (variance: {score_variance:.4f})"
-        
-        return False, ""
-    
-    def adapt_evaluation_focus(self) -> Dict[str, Any]:
-        """
-        Determine what to focus on during evaluation based on patterns.
-        
-        Returns:
-            Dictionary with evaluation focus areas
-        """
-        focus = {
-            "check_cv_method": True,
-            "validate_imports": True,
-            "monitor_execution_time": True,
-            "check_data_loading": True
-        }
-        
-        if not self.analysis or "error" in self.analysis:
-            return focus
-        
-        # Adapt based on common errors
-        for error in self.analysis.get("common_errors", []):
-            if "CV splits" in error:
-                focus["cv_method_critical"] = True
-            if "dependency" in error.lower():
-                focus["import_validation_critical"] = True
-            if "memory" in error.lower():
-                focus["memory_monitoring_critical"] = True
-        
-        return focus
 
 class IntelligentSolver:
     """Solver with journal-informed intelligence."""
@@ -411,6 +53,7 @@ class IntelligentSolver:
         self.journal_manager = JournalManager(self.work_dir)
         self.analyzer = JournalAnalyzer(self.journal_manager)
         self.policy = IntelligentPolicy(self.analyzer)
+        self.verifier = ClaudeVerifier(timeout_secs=300)
         
         # Solution tracking
         self.solutions = []
@@ -510,6 +153,24 @@ class IntelligentSolver:
             verbose=self.verbose
         )
         
+        # Use Claude to verify the execution result
+        task_description = load_task_description(self.work_dir)
+        verification = self.verifier.verify_execution_result(
+            execution_result, 
+            task_description, 
+            verbose=self.verbose
+        )
+        
+        if self.verbose and verification.get("verification_success"):
+            confidence = verification.get("confidence", "UNKNOWN")
+            issues = verification.get("issues", [])
+            print(f"🔍 Claude verification: {confidence} confidence")
+            if issues:
+                print(f"⚠️  Issues identified: {', '.join(issues)}")
+        
+        # Add verification to execution result
+        execution_result["claude_verification"] = verification
+        
         # Create solution with intelligence metadata
         solution = {
             "iteration": iteration,
@@ -554,11 +215,16 @@ class IntelligentSolver:
                 self.solutions.append(solution)
                 self.update_memory(solution)
                 
-                # Intelligent early stopping
-                should_stop, reason = self.policy.should_stop_early(self.solutions)
+                # Claude-based early stopping decision
+                task_description = load_task_description(self.work_dir) 
+                should_stop, reason = self.verifier.should_stop_early(
+                    self.solutions, 
+                    task_description, 
+                    verbose=self.verbose
+                )
                 if should_stop:
                     if self.verbose:
-                        print(f"\\n🛑 Intelligent early stopping: {reason}")
+                        print(f"\\n🛑 Claude-based early stopping: {reason}")
                     break
                     
             except KeyboardInterrupt:
@@ -717,6 +383,7 @@ class IntelligentSolver:
             status = "SUCCESS" if success else "FAILED"
             print(f"[Claude Artifacts] Saved {status} call artifacts for iteration {iteration}: {timestamp}")
 
+
 def main():
     """Main entry point for intelligent solver."""
     import argparse
@@ -751,6 +418,7 @@ def main():
     except Exception as e:
         print(f"❌ Intelligent solver failed: {e}")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
