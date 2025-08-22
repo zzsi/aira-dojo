@@ -48,8 +48,15 @@ class JournalManager:
                 
                 # Extract basic info
                 latency = self._extract_value(content, "Latency")
-                success = "Success**: True" in content
+                claude_success = "Success**: True" in content
                 code_extracted = "Code Extracted**: Yes" in content
+                
+                # Check for execution success (more important than Claude response success)
+                execution_success = "EXECUTION SUCCESS" in content or "SUCCESS (" in content
+                execution_failed = "EXECUTION FAILED" in content or "FAILED (" in content
+                
+                # Overall success means both Claude responded AND code executed successfully
+                success = claude_success and execution_success and not execution_failed
                 
                 journals.append({
                     "file": journal_file.name,

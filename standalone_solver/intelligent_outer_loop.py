@@ -332,6 +332,13 @@ class IntelligentPolicy:
         if best_score >= 0.95:
             return True, f"Excellent score achieved: {best_score:.4f}"
         
+        # Check for Claude breakdown (multiple consecutive failures with no code extraction)
+        recent_results = current_results[-3:]
+        if len(recent_results) >= 3:
+            no_code_failures = [r for r in recent_results if not r.get('success') and 'No code' in r.get('error', '')]
+            if len(no_code_failures) >= 2:
+                return True, "Claude stopped generating code - likely in error state"
+        
         # Check for repeated failures (based on journal analysis)
         if self.analysis and self.analysis.get("success_rate", 1.0) < 0.2 and len(current_results) >= 3:
             return True, "Low success rate detected, stopping to avoid wasted compute"
@@ -385,7 +392,7 @@ class IntelligentSolver:
         self.verbose = verbose
         
         # Initialize components
-        self.claude = ClaudeInterface(timeout_secs=300)
+        self.claude = ClaudeInterface(timeout_secs=900)  # 15 minutes for complex ML solutions
         self.evaluator = ImprovedCodeEvaluator(self.work_dir, timeout_secs=600)
         self.journal_manager = JournalManager(self.work_dir)
         self.analyzer = JournalAnalyzer(self.journal_manager)
@@ -457,7 +464,13 @@ class IntelligentSolver:
         # Extract and validate code
         code, explanation = extract_code_from_response(response)
         if not code:
-            return {"iteration": iteration, "success": False, "error": "No code extracted"}
+            # Check if this is a problematic short response
+            if len(response.strip()) < 100:
+                error_msg = f"Claude gave very short response ({len(response)} chars): '{response.strip()[:50]}...'"
+            else:
+                error_msg = f"No code block found in {len(response)} char response"
+            
+            return {"iteration": iteration, "success": False, "error": error_msg, "response_length": len(response)}
         
         is_valid, error = validate_python_code(code)
         if not is_valid:
@@ -572,9 +585,46 @@ class IntelligentSolver:
         
         if not solution['success']:
             error = solution.get('error', 'Unknown error')
-            memory_entry += f"**Error**: {error}\\n"
+            
+            # Extract key error details for Claude
+            if 'execution_result' in solution:
+                exec_result = solution['execution_result']
+                stderr = exec_result.get('stderr', '')
+                
+                # Extract meaningful error patterns
+                if 'ModuleNotFoundError' in stderr:
+                    key_error = self._extract_import_error(stderr)
+                elif 'XGBoostError' in stderr:
+                    key_error = "XGBoost failed - missing system dependencies (try sklearn alternatives)"
+                elif 'Library not loaded' in stderr:
+                    key_error = "System library missing - use basic sklearn packages instead"
+                elif 'SyntaxError' in stderr:
+                    key_error = "Python syntax error in generated code"
+                elif 'No code extracted' in error:
+                    key_error = "Claude failed to generate valid code - try simpler approach"
+                else:
+                    # Take first few lines of stderr for context
+                    error_lines = stderr.split('\\n')[:3]
+                    key_error = ' | '.join(line.strip() for line in error_lines if line.strip())
+                
+                memory_entry += f"**Error**: {key_error}\\n"
+            else:
+                memory_entry += f"**Error**: {error}\\n"
         
         self.memory += memory_entry
+    
+    def _extract_import_error(self, stderr: str) -> str:
+        """Extract key information from import errors."""
+        import re
+        
+        # Look for "No module named 'X'"
+        match = re.search(r"No module named '([^']+)'", stderr)
+        if match:
+            missing_module = match.group(1)
+            return f"Missing module '{missing_module}' - check dependencies or use alternatives"
+        
+        # Fallback
+        return "Import error - check package dependencies"
     
     def summarize_intelligent_session(self) -> Dict[str, Any]:
         """Summarize the intelligent session."""
