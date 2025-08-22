@@ -328,20 +328,22 @@ class IntelligentPolicy:
         if not current_results:
             return False, ""
         
-        # Check for excellent results
-        best_score = max((r.get('execution_result', {}).get('cv_score', 0) or 0) for r in current_results)
-        if best_score >= 0.95:
-            return True, f"Excellent score achieved: {best_score:.4f}"
+        # Check for excellent results (only from successful executions)
+        successful_results = [r for r in current_results if r.get('success', False)]
+        if successful_results:
+            best_score = max((r.get('execution_result', {}).get('cv_score', 0) or 0) for r in successful_results)
+            if best_score >= 0.95 and best_score <= 1.0:  # Valid score range
+                return True, f"Excellent score achieved: {best_score:.4f}"
         
         # Check for Claude breakdown (multiple consecutive failures with no code extraction)
-        recent_results = current_results[-3:]
-        if len(recent_results) >= 3:
+        recent_results = current_results[-4:]  # Look at more recent results
+        if len(recent_results) >= 4:  # Need 4 attempts before stopping
             no_code_failures = [r for r in recent_results if not r.get('success') and 'No code' in r.get('error', '')]
-            if len(no_code_failures) >= 2:
+            if len(no_code_failures) >= 3:  # Need 3 consecutive failures
                 return True, "Claude stopped generating code - likely in error state"
         
         # Check for repeated failures (based on journal analysis)
-        if self.analysis and self.analysis.get("success_rate", 1.0) < 0.2 and len(current_results) >= 3:
+        if self.analysis and self.analysis.get("success_rate", 1.0) < 0.1 and len(current_results) >= 4:
             return True, "Low success rate detected, stopping to avoid wasted compute"
         
         # Check for convergence (similar approaches not improving)
@@ -469,6 +471,9 @@ class IntelligentSolver:
             print(f"Querying Claude ({len(adapted_prompt)} chars)...")
         
         response, success, claude_metadata = self.claude.query(adapted_prompt, verbose=self.verbose)
+        
+        # Save all Claude responses for debugging (both successful and failed)
+        self._save_claude_response_artifacts(iteration, adapted_prompt, response, success, claude_metadata)
         
         if not success:
             return {"iteration": iteration, "success": False, "error": "Claude query failed"}
@@ -676,6 +681,41 @@ class IntelligentSolver:
                 print(f"Best solution: Iteration {best_solution['iteration']} (CV={best_solution['execution_result']['cv_score']:.4f})")
         
         return summary
+    
+    def _save_claude_response_artifacts(self, iteration: int, prompt: str, response: str, 
+                                      success: bool, metadata: dict):
+        """Save Claude response artifacts for debugging all calls (success and failures)."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Create artifacts directory
+        artifacts_dir = self.work_dir.parent / "artifacts"
+        artifacts_dir.mkdir(exist_ok=True)
+        
+        # Save prompt
+        prompt_file = artifacts_dir / f"prompt_{iteration}_{timestamp}.txt"
+        prompt_file.write_text(prompt)
+        
+        # Save response 
+        response_file = artifacts_dir / f"response_{iteration}_{timestamp}.txt"
+        response_file.write_text(response)
+        
+        # Save metadata
+        metadata_file = artifacts_dir / f"metadata_{iteration}_{timestamp}.json"
+        metadata_with_context = {
+            **metadata,
+            "iteration": iteration,
+            "success": success,
+            "response_length": len(response),
+            "prompt_length": len(prompt),
+            "timestamp": timestamp
+        }
+        
+        import json
+        metadata_file.write_text(json.dumps(metadata_with_context, indent=2))
+        
+        if self.verbose:
+            status = "SUCCESS" if success else "FAILED"
+            print(f"[Claude Artifacts] Saved {status} call artifacts for iteration {iteration}: {timestamp}")
 
 def main():
     """Main entry point for intelligent solver."""
@@ -685,7 +725,7 @@ def main():
     parser.add_argument("--work-dir", default="output/working", help="Working directory")
     parser.add_argument("--max-iterations", type=int, default=5, help="Maximum iterations")
     parser.add_argument("--quiet", action="store_true", help="Reduce verbosity")
-    parser.add_argument("--no-docker", action="store_true", help="Use virtual environment instead of Docker")
+    parser.add_argument("--no-docker", action="store_true", help="Use virtual environment instead of Docker (default: Docker)")
     
     args = parser.parse_args()
     

@@ -45,12 +45,17 @@ class DockerEvaluator:
             if not self._check_base_image():
                 self._build_base_image()
         except Exception as e:
-            print(f"⚠️  Docker not available: {e}")
-            print("Falling back to improved evaluator...")
-            # Import and delegate to improved evaluator as fallback
-            from improved_evaluator import ImprovedCodeEvaluator
-            self._fallback_evaluator = ImprovedCodeEvaluator(work_dir, timeout_secs, use_data_aliases)
-            self.docker_available = False
+            print(f"❌ Docker initialization failed: {e}")
+            print("\n🐳 Docker Error Details:")
+            print(f"   Error type: {type(e).__name__}")
+            print(f"   Error message: {str(e)}")
+            print("\n💡 Possible solutions:")
+            print("   1. Start Docker Desktop (if using Docker Desktop)")
+            print("   2. Check Docker daemon is running: docker ps")
+            print("   3. Check Docker permissions: docker run hello-world")
+            print("   4. Use virtual environment instead: --no-docker")
+            print("\n🛑 Terminating to avoid silent fallback")
+            raise RuntimeError(f"Docker required but not available: {e}") from e
     
     def _check_base_image(self) -> bool:
         """Check if base ML image exists."""
@@ -67,16 +72,18 @@ class DockerEvaluator:
         dockerfile_content = """
 FROM python:3.11-slim
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \\
+# Update package list and install system dependencies
+RUN apt-get update -y && \\
+    apt-get install -y --no-install-recommends \\
     build-essential \\
     curl \\
-    software-properties-common \\
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get clean \\
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # Install common ML packages
 COPY requirements-base.txt /tmp/
-RUN pip install --no-cache-dir -r /tmp/requirements-base.txt
+RUN pip install --no-cache-dir --upgrade pip && \\
+    pip install --no-cache-dir -r /tmp/requirements-base.txt
 
 # Create working directory
 WORKDIR /workspace
@@ -89,13 +96,13 @@ CMD ["python"]
 """
         
         base_requirements = """
-pandas>=1.5.0
-numpy>=1.21.0
-scikit-learn>=1.2.0
-xgboost>=1.7.0
-lightgbm>=3.3.0
-matplotlib>=3.5.0
-seaborn>=0.11.0
+pandas
+numpy
+scikit-learn
+matplotlib
+lightgbm
+xgboost
+scipy
 """
         
         # Create temporary build context
@@ -106,14 +113,24 @@ seaborn>=0.11.0
             (build_path / "Dockerfile").write_text(dockerfile_content)
             (build_path / "requirements-base.txt").write_text(base_requirements)
             
-            # Build image
+            # Build image with streaming logs
             try:
-                self.docker_client.images.build(
+                build_logs = self.docker_client.api.build(
                     path=str(build_path),
                     tag="ml-solver-base:latest",
                     rm=True,
-                    pull=True
+                    pull=True,
+                    decode=True
                 )
+                
+                # Stream build output
+                for log in build_logs:
+                    if 'stream' in log:
+                        print(log['stream'].rstrip())
+                    elif 'error' in log:
+                        print(f"❌ Build error: {log['error']}")
+                        raise docker.errors.BuildError(log['error'], build_logs)
+                
                 print("✅ Base ML Docker image built successfully")
             except Exception as e:
                 print(f"❌ Failed to build Docker image: {e}")
@@ -134,11 +151,8 @@ seaborn>=0.11.0
         Returns:
             Dictionary with execution results
         """
-        # Fallback to improved evaluator if Docker not available
-        if not self.docker_available:
-            return self._fallback_evaluator.execute_code_with_journaling(
-                code, claude_prompt, claude_response, claude_metadata, verbose
-            )
+        # Docker should be available (constructor would have failed otherwise)
+        assert self.docker_available, "Docker should be available"
         
         # Check if Claude wants to modify dependencies
         if "requirements.txt" in claude_response and "rebuild" in claude_response.lower():
@@ -150,10 +164,13 @@ seaborn>=0.11.0
             print(f"[Execution {self.evaluation_count}] Starting Docker code execution...")
         
         # Create journal entry first
-        self._journal_claude_interaction(claude_prompt, claude_response, claude_metadata)
+        journal_file = self._journal_claude_interaction(claude_prompt, claude_response, claude_metadata)
         
         # Execute code in Docker
         execution_result = self._execute_code_in_docker(code, verbose)
+        
+        # Update journal with execution results
+        self._update_journal_with_execution(journal_file, execution_result)
         
         # Save artifacts
         self._save_artifacts(code, execution_result, verbose)
@@ -165,10 +182,12 @@ seaborn>=0.11.0
         start_time = time.time()
         
         try:
-            # Create temporary directory for this execution
-            with tempfile.TemporaryDirectory() as temp_dir:
-                temp_path = Path(temp_dir)
-                
+            # Create temporary directory within work_dir (Docker-accessible on macOS)
+            temp_name = f"docker_exec_{self.evaluation_count}_{int(time.time())}"
+            temp_path = self.work_dir / temp_name
+            temp_path.mkdir(exist_ok=True)
+            
+            try:
                 # Write code to temporary file
                 solution_file = temp_path / "solution.py"
                 solution_file.write_text(code)
@@ -182,15 +201,20 @@ seaborn>=0.11.0
                     if verbose:
                         print(f"[Execution {self.evaluation_count}] No data directory found")
                 
-                # Create container volumes
+                # Create container volumes (Docker requires absolute paths)
                 volumes = {
-                    str(temp_path): {'bind': '/workspace', 'mode': 'rw'}
+                    str(temp_path.resolve()): {'bind': '/workspace', 'mode': 'rw'}
                 }
                 
                 if data_dir.exists():
-                    volumes[str(data_dir)] = {'bind': '/workspace/data', 'mode': 'ro'}
+                    abs_data_path = str(data_dir.resolve())
+                    volumes[abs_data_path] = {'bind': '/workspace/data', 'mode': 'ro'}
                     if verbose:
-                        print(f"[Execution {self.evaluation_count}] Data access via bind mount")
+                        print(f"[Execution {self.evaluation_count}] Data access via bind mount: {abs_data_path}")
+                else:
+                    # Create empty data symlink inside temp_path for compatibility
+                    data_link = temp_path / "data"
+                    data_link.mkdir(exist_ok=True)
                 
                 # Run container
                 if verbose:
@@ -203,7 +227,7 @@ seaborn>=0.11.0
                         volumes=volumes,
                         working_dir="/workspace",
                         detach=True,
-                        remove=True,
+                        remove=False,  # Don't auto-remove so we can get logs
                         network_mode="none",  # No network access for security
                         mem_limit="2g",  # Memory limit
                         cpu_count=2  # CPU limit
@@ -213,10 +237,17 @@ seaborn>=0.11.0
                     result = container.wait(timeout=self.timeout_secs)
                     execution_time = time.time() - start_time
                     
-                    # Get output
+                    # Get output before removing container
                     stdout = container.logs(stdout=True, stderr=False).decode('utf-8')
                     stderr = container.logs(stdout=False, stderr=True).decode('utf-8')
                     return_code = result['StatusCode']
+                    
+                    # Now remove the container
+                    try:
+                        container.remove()
+                    except Exception as remove_error:
+                        if verbose:
+                            print(f"[Execution {self.evaluation_count}] Warning: Could not remove container: {remove_error}")
                     
                     # Check for submission file
                     submission_file = temp_path / "submission.csv"
@@ -239,6 +270,20 @@ seaborn>=0.11.0
                         print(f"[Execution {self.evaluation_count}] {status} ({execution_time:.2f}s)")
                         if cv_score:
                             print(f"[Execution {self.evaluation_count}] CV Score: {cv_score}")
+                        
+                        # Debug information about why it failed
+                        if not success:
+                            if return_code != 0:
+                                print(f"[Execution {self.evaluation_count}] Debug: Non-zero return code: {return_code}")
+                            if cv_score is None:
+                                print(f"[Execution {self.evaluation_count}] Debug: No CV score extracted")
+                            if stderr.strip():
+                                print(f"[Execution {self.evaluation_count}] Debug: Stderr present ({len(stderr)} chars)")
+                        
+                        # Extract data point information from stdout
+                        data_info = self._extract_data_info(stdout)
+                        if data_info:
+                            print(f"[Execution {self.evaluation_count}] Data: {data_info}")
                     
                     return {
                         "success": success,
@@ -262,6 +307,17 @@ seaborn>=0.11.0
                         "cv_score": None,
                         "evaluator_type": "docker"
                     }
+                    
+            finally:
+                # Clean up temporary directory
+                try:
+                    # Fix permissions before cleanup to handle Docker-created files
+                    if temp_path.exists():
+                        subprocess.run(['chmod', '-R', '755', str(temp_path)], check=False)
+                        shutil.rmtree(temp_path)
+                except Exception as cleanup_error:
+                    if verbose:
+                        print(f"[Execution {self.evaluation_count}] Warning: Could not clean up {temp_path}: {cleanup_error}")
                 
         except Exception as e:
             execution_time = time.time() - start_time
@@ -282,11 +338,12 @@ seaborn>=0.11.0
         """Extract cross-validation score from stdout."""
         import re
         
+        # More specific patterns that look for CV scores
         patterns = [
-            r"Cross[- ]?validation.*?(?:score|accuracy).*?(\d+\.?\d*)",
-            r"CV.*?(?:score|accuracy).*?(\d+\.?\d*)",
-            r"(?:score|accuracy).*?(\d+\.?\d*)",
-            r"(\d+\.?\d+)"  # Fallback: any decimal number
+            r"Mean CV (?:Accuracy|Score):\s*(\d+\.?\d*)",
+            r"Cross[- ]?validation.*?(?:score|accuracy)[:\s]*(\d+\.?\d*)",
+            r"CV.*?(?:score|accuracy)[:\s]*(\d+\.?\d*)",
+            r"(?:Mean|Average).*?(?:score|accuracy)[:\s]*(\d+\.?\d*)"
         ]
         
         for pattern in patterns:
@@ -296,17 +353,50 @@ seaborn>=0.11.0
                     score = float(matches[-1])  # Take last match
                     if 0 <= score <= 1:
                         return score
-                    elif score > 1:  # Might be percentage
+                    elif 1 < score <= 100:  # Likely percentage
                         return score / 100
+                    # Reject clearly invalid scores (> 100 or negative)
                 except ValueError:
                     continue
         
         return None
     
+    def _extract_data_info(self, stdout: str) -> Optional[str]:
+        """Extract data information from stdout."""
+        import re
+        
+        info_parts = []
+        
+        # Look for training data shape
+        train_match = re.search(r"Training data shape:\s*\((\d+),\s*(\d+)\)", stdout)
+        if train_match:
+            info_parts.append(f"{train_match.group(1)} training samples")
+        
+        # Look for test data shape  
+        test_match = re.search(r"Test data shape:\s*\((\d+),\s*(\d+)\)", stdout)
+        if test_match:
+            info_parts.append(f"{test_match.group(1)} test samples")
+            
+        # Look for CV folds information
+        cv_match = re.search(r"(\d+)-[Ff]old\s+CV|n_splits\s*=\s*(\d+)|Cross[- ]?validation.*?(\d+)\s+folds?", stdout)
+        if cv_match:
+            folds = cv_match.group(1) or cv_match.group(2) or cv_match.group(3)
+            info_parts.append(f"{folds}-fold CV")
+        
+        # Look for author distribution
+        author_match = re.search(r"Author distribution:\s*\{[^}]+\}", stdout)
+        if author_match:
+            info_parts.append("author distribution found")
+        
+        return ", ".join(info_parts) if info_parts else None
+    
     def _journal_claude_interaction(self, prompt: str, response: str, metadata: Dict[str, Any]):
         """Journal Claude interaction - same as ImprovedCodeEvaluator."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         journal_file = self.journals_dir / f"claude_session_{timestamp}.md"
+        
+        # Extract code block for metadata
+        code_extracted = "```python" in response or "```" in response
         
         journal_content = f"""# Claude Interaction - {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
@@ -316,7 +406,8 @@ seaborn>=0.11.0
 - **Latency**: {metadata.get('latency', 0):.2f}s
 - **Prompt Length**: {metadata.get('prompt_length', len(prompt))} characters
 - **Response Length**: {metadata.get('response_length', len(response))} characters
-- **Success**: {metadata.get('return_code', 0) == 0}
+- **Success**: True
+- **Code Extracted**: {'Yes' if code_extracted else 'No'}
 
 ## Prompt Sent to Claude
 ```
@@ -334,6 +425,30 @@ seaborn>=0.11.0
 """
         
         journal_file.write_text(journal_content)
+        return journal_file
+    
+    def _update_journal_with_execution(self, journal_file: Path, execution_result: Dict[str, Any]):
+        """Update journal file with execution results."""
+        success = execution_result.get('success', False)
+        cv_score = execution_result.get('cv_score', 'N/A')
+        execution_time = execution_result.get('execution_time', 0)
+        return_code = execution_result.get('return_code', -1)
+        
+        status_text = "EXECUTION SUCCESS" if success else "EXECUTION FAILED"
+        
+        execution_update = f"""
+- **Execution Status**: {status_text}
+- **Return Code**: {return_code}
+- **Execution Time**: {execution_time:.2f}s
+- **CV Score**: {cv_score}
+- **Stdout Length**: {len(execution_result.get('stdout', ''))} chars
+- **Stderr Length**: {len(execution_result.get('stderr', ''))} chars
+"""
+        
+        # Read current content and append execution details
+        current_content = journal_file.read_text()
+        updated_content = current_content + execution_update
+        journal_file.write_text(updated_content)
     
     def _save_artifacts(self, code: str, execution_result: Dict[str, Any], verbose: bool = False):
         """Save execution artifacts - same as ImprovedCodeEvaluator."""
@@ -375,10 +490,8 @@ seaborn>=0.11.0
         Returns:
             True if successful, False otherwise
         """
-        if not self.docker_available:
-            if verbose:
-                print("Docker not available, cannot rebuild image")
-            return False
+        # Docker should be available (constructor would have failed otherwise)
+        assert self.docker_available, "Docker should be available"
         
         try:
             if verbose:
@@ -386,13 +499,11 @@ seaborn>=0.11.0
             
             # Create new requirements file
             base_requirements = """
-pandas>=1.5.0
-numpy>=1.21.0
-scikit-learn>=1.2.0
-xgboost>=1.7.0
-lightgbm>=3.3.0
-matplotlib>=3.5.0
-seaborn>=0.11.0
+pandas
+numpy
+scikit-learn
+matplotlib
+lightgbm
 """
             
             additional_requirements = "\n".join(requirements)
@@ -401,16 +512,18 @@ seaborn>=0.11.0
             dockerfile_content = """
 FROM python:3.11-slim
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \\
+# Update package list and install system dependencies
+RUN apt-get update -y && \\
+    apt-get install -y --no-install-recommends \\
     build-essential \\
     curl \\
-    software-properties-common \\
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get clean \\
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # Install ML packages
 COPY requirements-full.txt /tmp/
-RUN pip install --no-cache-dir -r /tmp/requirements-full.txt
+RUN pip install --no-cache-dir --upgrade pip && \\
+    pip install --no-cache-dir -r /tmp/requirements-full.txt
 
 # Create working directory
 WORKDIR /workspace
@@ -430,14 +543,23 @@ CMD ["python"]
                 (build_path / "Dockerfile").write_text(dockerfile_content)
                 (build_path / "requirements-full.txt").write_text(full_requirements)
                 
-                # Build new image
-                self.docker_client.images.build(
+                # Build new image with streaming logs
+                build_logs = self.docker_client.api.build(
                     path=str(build_path),
                     tag="ml-solver-base:latest",
                     rm=True,
                     pull=True,
-                    forcerm=True
+                    forcerm=True,
+                    decode=True
                 )
+                
+                # Stream build output
+                for log in build_logs:
+                    if 'stream' in log:
+                        print(log['stream'].rstrip())
+                    elif 'error' in log:
+                        print(f"❌ Build error: {log['error']}")
+                        raise docker.errors.BuildError(log['error'], build_logs)
                 
                 if verbose:
                     print("✅ Docker image rebuilt successfully")

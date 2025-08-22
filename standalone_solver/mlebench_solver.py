@@ -379,7 +379,7 @@ def main():
     parser.add_argument("--quiet", action="store_true", help="Reduce verbosity")
     parser.add_argument("--no-auto-commit", action="store_true", help="Disable automatic commits")
     parser.add_argument("--show-history", action="store_true", help="Show solution history and exit")
-    parser.add_argument("--no-docker", action="store_true", help="Use virtual environment instead of Docker")
+    parser.add_argument("--no-docker", action="store_true", help="Use virtual environment instead of Docker (default: Docker)")
     
     args = parser.parse_args()
     

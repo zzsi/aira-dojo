@@ -52,9 +52,16 @@ class ClaudeInterface:
             "--dangerously-skip-permissions",
             "--permission-mode", "bypassPermissions",
             "--model", "sonnet",
-            "--output-format", "text",
-            "-p", prompt
+            "--output-format", "text"
         ]
+        
+        # Don't use continue flag - each call should be independent
+        # The continue flag causes issues when previous calls failed
+        # if self.call_count > 1:
+        #     cmd.append("-c")
+        
+        # Add prompt
+        cmd.extend(["-p", prompt])
         
         if verbose:
             print(f"[Claude Call {self.call_count}] Sending prompt ({len(prompt)} chars)")
